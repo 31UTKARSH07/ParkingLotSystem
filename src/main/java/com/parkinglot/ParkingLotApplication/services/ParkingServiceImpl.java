@@ -1,6 +1,5 @@
 package com.parkinglot.ParkingLotApplication.services;
 
-
 import com.parkinglot.ParkingLotApplication.dto.ExitRequest;
 import com.parkinglot.ParkingLotApplication.dto.ExitResponse;
 import com.parkinglot.ParkingLotApplication.dto.ParkingRequest;
@@ -24,7 +23,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static com.parkinglot.ParkingLotApplication.model.enums.VehicleType.BIKE;
@@ -46,6 +48,8 @@ public class ParkingServiceImpl implements ParkingService {
         ParkingLot parkingLot = parkingLotRepository.findById(request.getParkingLotId())
                 .orElseThrow(() -> new ParkingLotNotFoundException("Parking lot not found"));
 
+        System.out.println("PARKING LOT FOUND: " + parkingLot);
+
         // Check if vehicle already exists, if not create new
         Vehicle vehicle = vehicleRepository.findByLicensePlate(request.getLicensePlate())
                 .orElse(new Vehicle());
@@ -57,6 +61,8 @@ public class ParkingServiceImpl implements ParkingService {
         vehicle.setOwnerPhone(request.getOwnerPhone());
         vehicle = vehicleRepository.save(vehicle);
 
+        System.out.println("VEHICLE FOUND: " + vehicle);
+
         // Check if vehicle is already parked
         if (ticketRepository.findByVehicleIdAndExitTimeIsNull(vehicle.getId()).isPresent()) {
             return ParkingResponse.builder()
@@ -67,6 +73,8 @@ public class ParkingServiceImpl implements ParkingService {
 
         // Find suitable spot
         SpotType requiredSpotType = determineSpotType(request.getVehicleType());
+
+        System.out.println("REQUIRED_SPOT_TYPE: " + requiredSpotType);
         ParkingSpot spot = findAvailableSpot(request.getParkingLotId(), requiredSpotType);
 
         if (spot == null) {
@@ -136,8 +144,56 @@ public class ParkingServiceImpl implements ParkingService {
     }
 
     @Override
+    @Transactional
     public ParkingLot createParkingLot(ParkingLot parkingLot) {
-        return parkingLotRepository.save(parkingLot);
+        ParkingLot savedLot = parkingLotRepository.save(parkingLot);
+        initializeParkingSpots(savedLot);
+        return savedLot;
+    }
+
+    private void initializeParkingSpots(ParkingLot parkingLot) {
+        if (parkingLot.getCapacityPerFloor() == null)
+            return;
+
+        Map<SpotType, Integer> spotsPerType = new EnumMap<>(SpotType.class);
+
+        parkingLot.getCapacityPerFloor().forEach((k, v) -> {
+            try {
+                VehicleType vType = VehicleType.valueOf(k.toUpperCase());
+                SpotType sType = determineSpotType(vType);
+                spotsPerType.merge(sType, v, Integer::sum);
+            } catch (IllegalArgumentException e) {
+                try {
+                    SpotType sType = SpotType.valueOf(k.toUpperCase());
+                    spotsPerType.merge(sType, v, Integer::sum);
+                } catch (Exception ex) {
+                    // Ignore invalid types
+                }
+            }
+        });
+
+        List<ParkingSpot> spots = new ArrayList<>();
+
+        for (int floor = 1; floor <= parkingLot.getTotalFloors(); floor++) {
+            for (Map.Entry<SpotType, Integer> entry : spotsPerType.entrySet()) {
+                SpotType type = entry.getKey();
+                int count = entry.getValue();
+
+                for (int i = 1; i <= count; i++) {
+                    // Unique ID: LotID-Floor-TypeInitial-Index
+                    String spotNumber = String.format("%s-%d-%s-%d",
+                            parkingLot.getId(), floor, type.name().substring(0, 1), i);
+
+                    ParkingSpot spot = new ParkingSpot(
+                            spotNumber,
+                            type,
+                            floor,
+                            parkingLot.getId());
+                    spots.add(spot);
+                }
+            }
+        }
+        parkingSpotRepository.saveAll(spots);
     }
 
     @Override
